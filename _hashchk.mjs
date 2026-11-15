@@ -1,0 +1,30 @@
+import { spawn } from 'node:child_process';
+import http from 'node:http'; import os from 'node:os'; import fs from 'node:fs'; import path from 'node:path';
+const CWD=process.cwd(); const EDGE='C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'; const PORT=9512;
+const profile=fs.mkdtempSync(path.join(os.tmpdir(),'edge-'));
+const child=spawn(EDGE,['--headless=new','--disable-gpu','--no-first-run','--mute-audio','--user-data-dir='+profile,'--remote-debugging-port='+PORT,'--window-size=1440,1000','about:blank'],{stdio:'ignore'});
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const getJson=p=>new Promise((res,rej)=>{http.get({host:'127.0.0.1',port:PORT,path:p},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>{try{res(JSON.parse(d))}catch(e){rej(e)}})}).on('error',rej)});
+(async()=>{
+  let ws=null;
+  for(let i=0;i<90;i++){try{const l=await getJson('/json/list');const p=(l||[]).find(t=>t.type==='page'&&t.webSocketDebuggerUrl);if(p){ws=p.webSocketDebuggerUrl;break}}catch(e){}await sleep(150)}
+  const sock=new WebSocket(ws);let id=0;const pend=new Map();
+  sock.addEventListener('message',ev=>{const m=JSON.parse(ev.data);if(m.id&&pend.has(m.id)){pend.get(m.id)(m);pend.delete(m.id)}});
+  await new Promise(r=>sock.addEventListener('open',r));
+  const send=(m,p={})=>new Promise(res=>{const i=++id;pend.set(i,res);sock.send(JSON.stringify({id:i,method:m,params:p}))});
+  await send('Page.enable');await send('Runtime.enable');
+  await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+  await send('Page.navigate',{url:'file:///'+CWD.split(path.sep).join('/')+'/index.html'});
+  await sleep(2600);
+  const ev=async(e)=>{const r=await send('Runtime.evaluate',{expression:e,returnByValue:true});
+    return r.result&&r.result.result?r.result.result.value:'ERR'};
+  const st=async(tag)=>console.log(tag, await ev(`(()=>{const s=document.getElementById('profCarousel');const c=s.querySelector('.is-center');const r=c.getBoundingClientRect();
+    return JSON.stringify({center:c.id,cardX:Math.round(r.x),stageX:Math.round(s.getBoundingClientRect().x),cardW:Math.round(r.width),h:s.style.height,dots:[...document.querySelectorAll('.pc-dot')].findIndex(d=>d.classList.contains('on')),hash:location.hash})})()`));
+  await ev(`(()=>{const s=document.createElement('style');s.textContent='*{transition:none!important;animation:none!important}.reveal{opacity:1!important;transform:none!important}';document.head.appendChild(s);return 1})()`);
+  await ev(`location.hash='#profile-intern';window.dispatchEvent(new HashChangeEvent('hashchange'));1`);
+  await sleep(300);
+  await st('after-hash');
+  await sleep(2000);
+  await st('after-wait');
+  sock.close();child.kill();process.exit(0);
+})();
